@@ -1,194 +1,269 @@
+import { WebSocket } from 'ws';
+import dotenv from 'dotenv';
 import chalk from 'chalk';
-import bs58 from 'bs58';
-import { PublicKey } from '@solana/web3.js';
-import { decodeInstruction as decodeSPLInstruction } from '@solana/spl-token';
+import { Connection } from '@solana/web3.js';
 import config from '../config/index.js';
+import { loadKeypair } from '../utils/keypairLoader.js';
+import { SnipeEngine } from '../core/snipeEngine.js';
+import { decodePumpFunCreate, resolveTag, getDexForTag } from './tagResolver.js';
 import { heliusLimiter } from '../utils/limiter.js';
-import { withBackoff } from '../utils/backoff.js';
+import { STRATEGIES, DEFAULT_STRATEGY } from '../config/strategies.js';
+import { telemetry } from '../utils/telemetry.js';
 
-export const PROGRAM_IDS = {
-  raydium: 'RVKd61ztZW9C8W2kacWp7QKUhM8GzPz4FdWYJzX4pGz',
-  pumpfun: 'G2z5vKbW6xVyJzv5bwVAoHa5bkkpKjKmtk5iPDSdZkW3',
-  splToken: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-  meteora: 'METL6oTzvWjVSkWsUXQ3Q8Lv8H9Cdn6C6z8DrZgPKyq',
-  ataProgram: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
+dotenv.config();
+
+const HELIUS_WS_URL = `wss://mainnet.helius-rpc.com/?api-key=${config.HELIUS_API_KEY}`;
+const connection = new Connection(config.SOLANA_RPC_URL, 'confirmed');
+const ACTIVE_STRATEGY = STRATEGIES[config.SNIPE_STRATEGY] || STRATEGIES[DEFAULT_STRATEGY];
+
+const PROGRAM_IDS = [
+  { label: 'Raydium CPMM', id: 201, key: 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C' },
+  { label: 'Pump.fun AMM', id: 202, key: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA' },
+  { label: 'Solana Token Program', id: 203, key: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+  { label: 'Raydium CLMM V4', id: 204, key: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' }
+];
+
+const SIGNAL_WEIGHTS = {
+  'Create_pool': 0.5,
+  'InitializeMint': 0.4,
+  'CreateMetadataAccountV3': 0.5,
+  'SetAuthority': 0.5,
+  'MintTo': 0.4,
+  'AddLiquidity': 0.4,
+  'Initialize2': 0.4,
+  'CreateIdempotent': 0.3,
+  'Initialize': 0.3,
+  'InitializeAccount': 0.2,
+  'CreateAccountWithSeed': 0.3,
+  'Burn': 0.2,
+  'InitializeImmutableOwner': 0.1,
+  'TransferChecked': 0.05,
+  'CloseAccount': 0.05,
+  'Create': 0.05,
+  'CreateAccount': 0.1,
+  'SyncNative': 0.2,
+  'InitializeAccount3': 0.1,
+  'GetAccountDataSize': 0.05
 };
 
-function throttleLimiter() {
+
+const signalStats = {};
+PROGRAM_IDS.forEach(({ label }) => {
+  signalStats[label] = {
+    matches: 0,
+    failures: 0,
+    unresolved: 0,
+    received: 0
+  };
+});
+
+let payerKeypair, snipeEngine;
+try {
+  payerKeypair = loadKeypair();
+  snipeEngine = new SnipeEngine(connection, payerKeypair, ACTIVE_STRATEGY);
+  console.log(chalk.green('✅ Snipe engine initialized'));
+} catch (err) {
+  console.error(chalk.redBright('❌ Engine init failed:'), err.message);
+  process.exit(1);
+}
+
+async function throttle() {
   return new Promise((resolve, reject) => {
-    heliusLimiter.removeTokens(1, (err) => {
+    heliusLimiter.removeTokens(1, err => {
       if (err) return reject(err);
       resolve();
     });
   });
 }
 
-// Cache for Raydium SDK to prevent repeated imports
-let Liquidity;
-let raydiumImportPromise;
-
-async function loadRaydiumSDK() {
-  if (!raydiumImportPromise) {
-    await throttleLimiter();
-    raydiumImportPromise = import('@raydium-io/raydium-sdk-v2')
-      .then(raydium => {
-        Liquidity = raydium.Liquidity;
-        console.log(chalk.gray('🧪 Raydium SDK loaded'));
-        return true;
-      })
-      .catch(err => {
-        console.error(chalk.redBright('❌ Failed to load Raydium SDK:'), err.message);
-        return false;
-      });
+let cachedSlot = { value: 0, lastUpdated: 0 };
+async function getCachedSlot() {
+  await throttle();
+  const now = Date.now();
+  if (now - cachedSlot.lastUpdated > 1000) {
+    cachedSlot.value = await withBackoff(() => connection.getSlot(), 5, 'getSlot');
+    cachedSlot.lastUpdated = now;
   }
-  return raydiumImportPromise;
+  return cachedSlot.value;
 }
 
-// Cache for SPL token decodes to reduce RPC calls
-const splTokenCache = new Map();
-const CACHE_TTL = 5000;
-
-export async function resolveTag(ix, logs = [], connection) {
-  const context = logs.join(' ').toLowerCase();
-
-  if (!ix) {
-    if (context.includes('initializemint')) {
-      return buildTag('spl_mint_init', 0.96, 'unknown', logs);
+export async function withBackoff(fn, maxRetries = 5, fnName = 'unknown') {
+  let delay = 500;
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err.message?.includes('429')) {
+        console.warn(`[BACKOFF][${fnName}] Rate limit. Retrying in ${delay}ms...`);
+        await new Promise(res => setTimeout(res, delay + Math.random() * 150));
+        delay *= 2;
+      } else throw err;
     }
-    if (context.includes('instruction: create') && context.includes('program data')) {
-      return decodePumpFunCreate(logs);
-    }
-    if (/initializepool|pool created/.test(context)) {
-      return buildTag('raydium_initPool', 0.92, 'unknown', logs);
-    }
-    if (/vault|mint|init/.test(context)) {
-      return buildTag('meteora_initPool', 0.89, 'unknown', logs);
-    }
-    return null;
   }
+  throw new Error(`[${fnName}] Max retries reached.`);
+}
 
-  try {
-    const pid = ix.programId.toString();
-    const accounts = ix.accounts?.map(a => new PublicKey(a)) || [];
-    const mint = accounts.find(pk => PublicKey.isOnCurve(pk.toString()))?.toString();
-    const data = ix.data ? bs58.decode(ix.data) : null;
-    const cacheKey = `${pid}:${mint}:${data?.toString()}`;
+function createWebSocket() {
+  let reconnectDelay = 1000;
+  let reconnectAttempts = 0;
+  const processedSigs = new Map();
 
-    if (splTokenCache.has(cacheKey)) {
-      const cached = splTokenCache.get(cacheKey);
-      if (Date.now() - cached.timestamp < CACHE_TTL) return cached.value;
+  const ws = new WebSocket(HELIUS_WS_URL);
+
+  setInterval(() => {
+    for (const [sig, timestamp] of processedSigs.entries()) {
+      if (Date.now() - timestamp > 60000) {
+        processedSigs.delete(sig);
+      }
     }
+  }, 10000);
 
-    if (pid === PROGRAM_IDS.pumpfun) {
-      const tag = buildTag('pumpfun_launch', 0.95, mint || 'unknown', logs);
-      splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
-      return tag;
-    }
+  ws.on('open', () => {
+    reconnectDelay = 1000;
+    reconnectAttempts = 0;
+    console.log(chalk.cyanBright('🔌 Connected to Helius WebSocket'));
 
-    if (pid === PROGRAM_IDS.raydium) {
-      await loadRaydiumSDK();
-      if (Liquidity) {
-        const decoded = Liquidity.decodeInstruction({
-          programId: new PublicKey(pid),
-          keys: accounts,
-          data
-        });
-        if (decoded?.type === 'initializePool') {
-          const tag = buildTag('raydium_initPool', 0.98, mint || 'unknown', logs);
-          splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
-          return tag;
+    PROGRAM_IDS.forEach(({ id, key, label }, i) => {
+      setTimeout(() => {
+        try {
+          ws.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            method: 'logsSubscribe',
+            params: [{ mentions: [key] }, { commitment: 'confirmed' }]
+          }));
+          console.log(chalk.gray(`📡 Subscribed to logs for ${label}`));
+        } catch (err) {
+          console.error(chalk.redBright(`❌ Subscription error for ${label}:`), err.message);
         }
-      }
+      }, i * 500);
+    });
+  });
+
+  ws.on('message', async msg => {
+    let sourceLabel = 'Unknown';
+    if (!heliusLimiter.tryRemoveTokens(1, true)) {
+      console.warn(chalk.yellow('⚠️ Message rate limited'));
+      return;
     }
 
-    if (pid === PROGRAM_IDS.meteora && logs.some(l => /mint|vault|init/i.test(l))) {
-      const tag = buildTag('meteora_initPool', 0.89, mint || 'unknown', logs);
-      splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
-      return tag;
-    }
-
-    if (pid === PROGRAM_IDS.splToken) {
-      if (!heliusLimiter.tryRemoveTokens(1, true)) {
-        console.warn(chalk.yellow('⚠️ SPL decode rate limited'));
-        return null;
+    try {
+      const parsed = JSON.parse(msg);
+      const result = parsed?.params?.result;
+      const logs = result?.value?.logs || [];
+      const sig = result?.signature || `slot-${result?.context?.slot}`;
+      const slot = result?.context?.slot || 0;
+      const sourceId = parsed?.id;
+      if (!sourceId) {
+        console.log(`⚠️ [TRACE] Missing sourceId for incoming message`);
       }
-      const decoded = await withBackoff(() =>
-        decodeSPLInstruction({ programId: new PublicKey(pid), keys: accounts, data })
+      console.log(`🧠 TRACE | Slot: ${slot} | Logs: ${logs.length} | Sig: ${sig}`);
+
+      const sourceLabel = PROGRAM_IDS.find(p => p.id === sourceId)?.label || 'Unknown';
+      if (!signalStats[sourceLabel]) {
+        signalStats[sourceLabel] = { matches: 0, failures: 0, unresolved: 0, received: 0 };
+      }
+
+      signalStats[sourceLabel].received++;
+      if (processedSigs.has(sig)) return;
+      processedSigs.set(sig, Date.now());
+
+      const currentSlot = await getCachedSlot();
+      const delta = currentSlot - slot;
+      if (delta > config.STALE_SLOT_THRESHOLD) return;
+
+      const joinedLogs = logs.join(' | ');
+      console.log(`🔖 Full joined logs:\n${joinedLogs}`);
+
+      const score = logs.reduce((acc, log) => {
+        for (const key in SIGNAL_WEIGHTS) {
+          if (log.includes(key)) acc += SIGNAL_WEIGHTS[key];
+        }
+        return acc;
+      }, 0);
+
+      const instructionRegex = /Instruction:\s+([a-zA-Z0-9_]+)/;
+      const contributingLogs = logs
+        .filter(log => instructionRegex.test(log))
+        .map(log => {
+          const matchedInstruction = instructionRegex.exec(log)?.[1];
+          const weight = SIGNAL_WEIGHTS[matchedInstruction];
+          const weightNote = weight ? `${matchedInstruction} [${weight}]` : '—';
+          return `${chalk.white(log)} ${chalk.dim(`← ${weightNote}`)}`;
+        });
+
+      if (score >= config.CONFIDENCE_THRESHOLD) {
+        console.log(chalk.yellowBright(`👀 Potential launch | Score: ${score.toFixed(2)} | Slot: ${slot}`));
+        console.log(chalk.gray(`📎 Contributing logs:\n${contributingLogs.join('\n')}`));
+      }
+
+      let tagInfo = sourceLabel === 'Pump.fun AMM'
+        ? decodePumpFunCreate(logs)
+        : await withBackoff(() => resolveTag(null, logs, connection), 5, `resolveTag:${sig}`);
+
+      if (!tagInfo || tagInfo.confidence < config.CONFIDENCE_THRESHOLD) {
+        signalStats[sourceLabel].unresolved++;
+        telemetry.logUnresolvedTag({ programId: sourceLabel, logs, slot, signature: sig });
+        return;
+      }
+
+      signalStats[sourceLabel].matches++;
+      telemetry.logSnipeAttempt({
+        tag: tagInfo.tag,
+        mint: tagInfo.mint,
+        confidence: tagInfo.confidence,
+        ACTIVE_STRATEGY,
+        signature: sig
+      });
+
+      console.log(chalk.bold.cyan(`\n🔖 Launch Detected:`) +
+        chalk.magenta(` [${tagInfo.tag}] `) +
+        `Mint: ${chalk.blue(tagInfo.mint)} | Confidence: ${chalk.green(tagInfo.confidence.toFixed(2))}`);
+
+      await withBackoff(() =>
+        snipeEngine.executeSnipe({
+          ...tagInfo,
+          dex: getDexForTag(tagInfo.tag),
+          amountInSol: config.AMOUNT_IN_SOL
+        }), 5, `executeSnipe:${sig}`
       );
-      if (decoded?.instruction === 'InitializeMint') {
-        const tag = buildTag('spl_mint_init', 0.96, mint || 'unknown', logs);
-        splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
-        return tag;
-      }
+    } catch (err) {
+      signalStats[sourceLabel].failures++;
+      console.error(chalk.redBright('❌ Socket error:'), err.message);
     }
-  } catch (err) {
-    console.log(chalk.redBright('Instruction resolver failed:'), err.message);
-  }
+  });
 
-  return null;
+  ws.on('error', err => {
+    console.error(chalk.redBright('❌ WS Error:'), err.message);
+  });
+
+  ws.on('close', () => {
+    reconnectAttempts++;
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    console.warn(chalk.yellowBright(
+      `⚠️ WebSocket closed. Reconnecting in ${reconnectDelay}ms... (Attempt ${reconnectAttempts})`
+    ));
+    setTimeout(createWebSocket, reconnectDelay + Math.random() * 1000); // ⏱ Add jitter here
+  });
+
+  return ws;
 }
 
-export function getDexForTag(tag) {
-  const map = {
-    raydium_initPool: 'raydium',
-    pumpfun_launch: 'raydium',
-    pumpfun_create: 'raydium',
-    meteora_initPool: 'meteora',
-    spl_mint_init: 'raydium'
-  };
-  const preferred = config.DEX_PRIORITY.find(d => d.toLowerCase() === map[tag]);
-  return preferred || map[tag] || 'raydium';
-}
+const ws = createWebSocket();
 
-function buildTag(tag, confidence, mint, logs) {
-  if (confidence < config.CONFIDENCE_THRESHOLD) return null;
-  return {
-    tag,
-    confidence,
-    mint,
-    logs: logs?.slice(0, 5) || []
-  };
-}
-
-export function decodePumpFunCreate(logs) {
-  if (!heliusLimiter.tryRemoveTokens(1, true)) {
-    console.warn(chalk.yellow('⚠️ Pump.fun decode throttled'));
-    return null;
-  }
-
-  const createLog = logs.find(l => l.includes('Instruction: Create'));
-  const dataLog = logs.find(l => l.includes('Program data:'));
-  if (!createLog || !dataLog) return null;
-
-  try {
-    const encoded = dataLog.split('Program data:')[1].trim();
-    const buffer = Buffer.from(encoded, 'base64');
-
-    const name = buffer.slice(0, 32).toString().replace(/\0/g, '');
-    const symbol = buffer.slice(32, 36).toString().replace(/\0/g, '');
-    const uri = buffer.slice(36, 236).toString().replace(/\0/g, '');
-    const mint = new PublicKey(buffer.slice(236, 268));
-    const curve = new PublicKey(buffer.slice(268, 300));
-    const user = new PublicKey(buffer.slice(300, 332));
-
-    const [assocCurve] = PublicKey.findProgramAddressSync(
-      [curve.toBuffer(), new PublicKey(PROGRAM_IDS.splToken).toBuffer(), mint.toBuffer()],
-      new PublicKey(PROGRAM_IDS.ataProgram)
+setInterval(() => {
+  const timestamp = new Date().toLocaleTimeString();
+  console.log(chalk.gray(`💓 ${timestamp} | Telemetry:`));
+  Object.entries(signalStats).forEach(([label, stats]) => {
+    console.log(
+      chalk.bold(label.padEnd(20)) +
+      `→ Received: ${chalk.white(stats.received)} | Matched: ${chalk.green(stats.matches)} | Unresolved: ${chalk.yellow(stats.unresolved)} | Failures: ${chalk.red(stats.failures)}`
     );
+  });
+}, 10000);
 
-    return {
-      tag: 'pumpfun_create',
-      name,
-      symbol,
-      uri,
-      mint: mint.toString(),
-      user: user.toString(),
-      bondingCurve: curve.toString(),
-      associatedBondingCurve: assocCurve.toString(),
-      confidence: 0.97
-    };
-  } catch (err) {
-    console.error('Pump.fun decode error:', err.message);
-    return null;
-  }
-}
+process.on('SIGINT', () => {
+  console.log(chalk.redBright('\n🛑 Graceful shutdown...'));
+  ws.close();
+  process.exit(0);
+});
