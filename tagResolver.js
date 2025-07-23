@@ -5,28 +5,22 @@ import { decodeInstruction as decodeSPLInstruction } from '@solana/spl-token';
 import config from '../config/index.js';
 import { heliusLimiter } from '../utils/limiter.js';
 import { withBackoff } from '../utils/backoff.js';
-
-export const PROGRAM_IDS = {
-  raydium: 'RVKd61ztZW9C8W2kacWp7QKUhM8GzPz4FdWYJzX4pGz',
-  pumpfun: 'G2z5vKbW6xVyJzv5bwVAoHa5bkkpKjKmtk5iPDSdZkW3',
-  splToken: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-  meteora: 'METL6oTzvWjVSkWsUXQ3Q8Lv8H9Cdn6C6z8DrZgPKyq',
-  ataProgram: 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL'
-};
+import { PROGRAM_IDS } from './programs.js';
+import { SIGNAL_WEIGHTS } from './heliusSocketClient.js';
 
 function throttleLimiter() {
   return new Promise((resolve, reject) => {
-    heliusLimiter.removeTokens(1, (err) => {
-      if (err) return reject(err);
-      resolve();
-    });
+    heliusLimiter.removeTokens(1, err => err ? reject(err) : resolve());
   });
 }
 
-// Cache for Raydium SDK to prevent repeated imports
+// Caching
+const splTokenCache = new Map();
+const CACHE_TTL = 5000;
+
+// SDK loader cache
 let Liquidity;
 let raydiumImportPromise;
-
 async function loadRaydiumSDK() {
   if (!raydiumImportPromise) {
     await throttleLimiter();
@@ -44,48 +38,79 @@ async function loadRaydiumSDK() {
   return raydiumImportPromise;
 }
 
-// Cache for SPL token decodes to reduce RPC calls
-const splTokenCache = new Map();
-const CACHE_TTL = 5000;
-
 export async function resolveTag(ix, logs = [], connection) {
   const context = logs.join(' ').toLowerCase();
 
   if (!ix) {
+    // 🧠 Log-only inference block
+    console.log('🧪 Log-only resolver match context:', context);
+
     if (context.includes('initializemint')) {
+      console.log('🔖 Log-only tag matched: spl_mint_init');
       return buildTag('spl_mint_init', 0.96, 'unknown', logs);
     }
     if (context.includes('instruction: create') && context.includes('program data')) {
+      console.log('🔖 Log-only tag matched: pumpfun_create');
       return decodePumpFunCreate(logs);
     }
     if (/initializepool|pool created/.test(context)) {
+      console.log('🔖 Log-only tag matched: raydium_initPool');
       return buildTag('raydium_initPool', 0.92, 'unknown', logs);
     }
     if (/vault|mint|init/.test(context)) {
+      console.log('🔖 Log-only tag matched: meteora_initPool');
       return buildTag('meteora_initPool', 0.89, 'unknown', logs);
     }
+    const rawScore = logs.reduce((acc, log) => {
+      const lowerLog = log.toLowerCase();
+      for (const key in SIGNAL_WEIGHTS) {
+        if (lowerLog.includes(key.toLowerCase())) {
+          acc += SIGNAL_WEIGHTS[key];
+        }
+      }
+      return acc;
+    }, 0);
+
+    if (rawScore >= config.SCORE_THRESHOLD) {
+      console.log('⚠️ High signal score detected, but no tag matched. Returning fallback.');
+      return buildTag('score_only_fallback', rawScore, 'unknown', logs);
+    }
+
+    console.log('🛑 No log-only tag matched. Returning null.');
     return null;
   }
 
   try {
+    // 🧬 Instruction parsing block
     const pid = ix.programId.toString();
     const accounts = ix.accounts?.map(a => new PublicKey(a)) || [];
     const mint = accounts.find(pk => PublicKey.isOnCurve(pk.toString()))?.toString();
     const data = ix.data ? bs58.decode(ix.data) : null;
     const cacheKey = `${pid}:${mint}:${data?.toString()}`;
 
+    console.log('🔍 Instruction resolver → programId:', pid);
+    console.log('🔍 Accounts:', accounts.map(pk => pk.toString()));
+    console.log('🎯 Mint address extracted:', mint);
+
+    // ✅ Cached result block
     if (splTokenCache.has(cacheKey)) {
       const cached = splTokenCache.get(cacheKey);
-      if (Date.now() - cached.timestamp < CACHE_TTL) return cached.value;
+      if (Date.now() - cached.timestamp < CACHE_TTL) {
+        console.log('💾 Returning cached tag for key:', cacheKey);
+        return cached.value;
+      }
     }
 
-    if (pid === PROGRAM_IDS.pumpfun) {
+    // 🚀 Pump.fun block
+    if ([PROGRAM_IDS.pumpfunLegacy, PROGRAM_IDS.pumpfunVault].includes(pid)) {
       const tag = buildTag('pumpfun_launch', 0.95, mint || 'unknown', logs);
+      console.log('🚀 Pump.fun tag matched:', tag);
       splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
       return tag;
     }
 
-    if (pid === PROGRAM_IDS.raydium) {
+    // 🧪 Raydium block
+    if ([PROGRAM_IDS.raydiumCPMM, PROGRAM_IDS.raydiumCLMMv4].includes(pid)) {
       await loadRaydiumSDK();
       if (Liquidity) {
         const decoded = Liquidity.decodeInstruction({
@@ -93,62 +118,55 @@ export async function resolveTag(ix, logs = [], connection) {
           keys: accounts,
           data
         });
+
+        console.log('🧪 Raydium decoded instruction type:', decoded?.type);
+
         if (decoded?.type === 'initializePool') {
           const tag = buildTag('raydium_initPool', 0.98, mint || 'unknown', logs);
+          console.log('📡 Raydium tag matched:', tag);
           splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
           return tag;
         }
       }
     }
 
+    // 🏦 Meteora vault block
     if (pid === PROGRAM_IDS.meteora && logs.some(l => /mint|vault|init/i.test(l))) {
       const tag = buildTag('meteora_initPool', 0.89, mint || 'unknown', logs);
+      console.log('🏦 Meteora tag matched:', tag);
       splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
       return tag;
     }
 
+    // 💉 SPL Token block
     if (pid === PROGRAM_IDS.splToken) {
       if (!heliusLimiter.tryRemoveTokens(1, true)) {
         console.warn(chalk.yellow('⚠️ SPL decode rate limited'));
         return null;
       }
+
       const decoded = await withBackoff(() =>
         decodeSPLInstruction({ programId: new PublicKey(pid), keys: accounts, data })
       );
+
+      console.log('🧪 SPL decode result:', decoded?.instruction);
+
       if (decoded?.instruction === 'InitializeMint') {
         const tag = buildTag('spl_mint_init', 0.96, mint || 'unknown', logs);
+        console.log('💉 SPL tag matched:', tag);
         splTokenCache.set(cacheKey, { value: tag, timestamp: Date.now() });
         return tag;
       }
     }
   } catch (err) {
-    console.log(chalk.redBright('Instruction resolver failed:'), err.message);
+    console.log(chalk.redBright('❌ Instruction resolver failed:'), err.message);
   }
 
+  // 🛑 No match fallback
+  console.log('🛑 No resolver matched this trace. Returning null.');
   return null;
 }
 
-export function getDexForTag(tag) {
-  const map = {
-    raydium_initPool: 'raydium',
-    pumpfun_launch: 'raydium',
-    pumpfun_create: 'raydium',
-    meteora_initPool: 'meteora',
-    spl_mint_init: 'raydium'
-  };
-  const preferred = config.DEX_PRIORITY.find(d => d.toLowerCase() === map[tag]);
-  return preferred || map[tag] || 'raydium';
-}
-
-function buildTag(tag, confidence, mint, logs) {
-  if (confidence < config.CONFIDENCE_THRESHOLD) return null;
-  return {
-    tag,
-    confidence,
-    mint,
-    logs: logs?.slice(0, 5) || []
-  };
-}
 
 export function decodePumpFunCreate(logs) {
   if (!heliusLimiter.tryRemoveTokens(1, true)) {
@@ -191,4 +209,26 @@ export function decodePumpFunCreate(logs) {
     console.error('Pump.fun decode error:', err.message);
     return null;
   }
+}
+
+export function getDexForTag(tag) {
+  const map = {
+    raydium_initPool: 'raydium',
+    pumpfun_launch: 'raydium',
+    pumpfun_create: 'raydium',
+    meteora_initPool: 'meteora',
+    spl_mint_init: 'raydium'
+  };
+  const preferred = config.DEX_PRIORITY.find(d => d.toLowerCase() === map[tag]);
+  return preferred || map[tag] || 'raydium';
+}
+
+function buildTag(tag, confidence, mint, logs) {
+  if (confidence < config.CONFIDENCE_THRESHOLD) return null;
+  return {
+    tag,
+    confidence,
+    mint,
+    logs: logs?.slice(0, 5) || []
+  };
 }
