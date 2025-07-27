@@ -2,7 +2,6 @@
 import chalk from 'chalk';
 import bs58 from 'bs58';
 import { PublicKey } from '@solana/web3.js';
-import { decodeInstruction as decodeSPLInstruction } from '@solana/spl-token';
 import config from '../config/index.js';
 import { heliusLimiter } from '../utils/limiter.js';
 import { withBackoff } from '../utils/backoff.js';
@@ -10,12 +9,6 @@ import { PROGRAM_IDS } from './programs.js';
 import { calculateSignalScore } from './heliusSocketClient.js';
 import fetch from 'node-fetch';
 
-function throttleLimiter() {
-  return new Promise((resolve, reject) => {
-    heliusLimiter.removeTokens(1, err => err ? reject(err) : resolve());
-  });
-}
-// Fingerprint definitions
 export const FINGERPRINTS = {
   launch_mint_metadata: {
     instructions: ['MintTo', 'CreateMetadataAccountV3', 'Create', 'initializeMetadataPointer', 'initializeMint'],
@@ -78,13 +71,15 @@ function matchFingerprint(logs = [], instructions = [], programId = 'unknown') {
 
   return null;
 }
-export async function resolveTag(ix, logs = [], connection) {
+
+export async function resolveTag(logs = []) {
   const context = logs.join(' ');
   const rawScore = calculateSignalScore(logs, context);
-  const programId = ix?.programId?.toString() || 'unknown';
+  const programLogLine = logs.find(l => l.includes('Program log:'));
+  const programId = programLogLine?.split('Program log:')[1]?.trim() || 'unknown';
+
   const fingerprintMatch = matchFingerprint(logs, [], programId);
 
-  // 🧠 Universal decoder logic — handles both synthetic and live flows
   if (
     fingerprintMatch?.tag === 'pumpfun_create' &&
     logs.some(l => l.includes('Program data:'))
@@ -97,7 +92,7 @@ export async function resolveTag(ix, logs = [], connection) {
     const tag = parsed?.tag || 'pumpfun_create';
 
     if (decodedMint) {
-      const valid = await isValidMint(decodedMint);
+      const valid = await validateMintCandidate(decodedMint);
       if (valid) {
         console.log(`✅ Mint confirmed: ${decodedMint}`);
       } else {
@@ -107,103 +102,31 @@ export async function resolveTag(ix, logs = [], connection) {
     }
   }
 
-  // 🧪 Synthetic fallback path (if ix is null and fingerprint didn't match)
-  if (!ix && !fingerprintMatch) {
-    if (rawScore >= config.SCORE_THRESHOLD) {
-      console.log('⚠️ Score-only fallback triggered');
-      return buildTag('score_only_fallback', rawScore, 'unknown');
-    }
-    return null;
+  if (!fingerprintMatch && rawScore >= config.SCORE_THRESHOLD) {
+    console.log('⚠️ Score-only fallback triggered');
+    return buildTag('score_only_fallback', rawScore, 'unknown');
   }
 
-  // 🧯 Fingerprint match fallback
   if (fingerprintMatch) {
     console.log(`🔖 Fingerprint matched: ${fingerprintMatch.tag} | Confidence: ${fingerprintMatch.confidence}`);
     return buildTag(fingerprintMatch.tag, fingerprintMatch.confidence, 'unknown', 'main');
   }
 
-  // 🔎 Instruction-level decoding
-  try {
-    const pid = programId;
-    const accounts = ix?.accounts?.map(a => new PublicKey(a)) || [];
-    const mint = accounts.find(pk => PublicKey.isOnCurve(pk.toString()))?.toString();
-    const data = ix?.data ? bs58.decode(ix.data) : null;
-
-    if ([PROGRAM_IDS.pumpfunLegacy, PROGRAM_IDS.pumpfunVault].includes(pid)) {
-      return buildTag('pumpfun_launch', 0.95, mint || 'unknown');
-    }
-
-    if ([PROGRAM_IDS.raydiumCPMM, PROGRAM_IDS.launchLab].includes(pid)) {
-      await throttleLimiter();
-      const raydium = await import('@raydium-io/raydium-sdk-v2').catch(() => null);
-      if (raydium?.Liquidity) {
-        const decoded = raydium.Liquidity.decodeInstruction({
-          programId: new PublicKey(pid),
-          keys: accounts,
-          data
-        });
-        if (decoded?.type === 'initializePool') {
-          return buildTag('raydium_initPool', 0.98, mint || 'unknown');
-        }
-      }
-    }
-
-    if (pid === PROGRAM_IDS.meteora && logs.some(l => /mint|vault|init/i.test(l))) {
-      return buildTag('meteora_initPool', 0.89, mint || 'unknown');
-    }
-
-    if (pid === PROGRAM_IDS.splToken) {
-      await throttleLimiter();
-      const decoded = await withBackoff(
-        () => decodeSPLInstruction({ programId: new PublicKey(pid), keys: accounts, data }),
-        5,
-        'decodeSPLInstruction'
-      );
-      if (decoded?.instruction === 'InitializeMint') {
-        return buildTag('spl_mint_init', 0.96, mint || 'unknown');
-      }
-    }
-
-    const decodedInstr = data ? await tryDecodeInstruction(pid, accounts, data) : null;
-    const matched = matchFingerprint(logs, [decodedInstr], pid);
-    if (matched) {
-      return buildTag(matched.tag, matched.confidence, mint || 'unknown');
-    }
-
-    if (rawScore >= config.SCORE_THRESHOLD) {
-      return buildTag('score_only_fallback', rawScore, mint || 'unknown');
-    }
-  } catch (err) {
-    console.error(chalk.red('❌ Resolver error:'), err.message);
-  }
-
-  return null;
-}
-async function tryDecodeInstruction(pid, accounts, data) {
-  await throttleLimiter();
-  if (pid === PROGRAM_IDS.splToken) {
-    try {
-      const decoded = await withBackoff(
-        () => decodeSPLInstruction({ programId: new PublicKey(pid), keys: accounts, data }),
-        5,
-        'tryDecodeInstruction'
-      );
-      return decoded?.instruction;
-    } catch {
-      return null;
-    }
-  }
   return null;
 }
 
 export async function decodePumpFunCreate(logs = []) {
-  const dataLogs = logs.filter(l => l.includes('Program data:'));
+  const dataLogs = logs.filter(log => log.toLowerCase().includes('program data:'));
   if (dataLogs.length === 0) return null;
 
   for (const line of dataLogs) {
-    const parts = line.split('Program data:');
-    if (parts.length < 2) continue;
-    const encoded = parts[1].trim();
+    const match = line.split(/program data:/i);
+    if (match.length < 2) continue;
+
+    const encoded = match[1].trim();
+    if (!/^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+      continue;
+    }
 
     let buffer;
     try {
@@ -212,69 +135,87 @@ export async function decodePumpFunCreate(logs = []) {
       continue;
     }
 
-    if (buffer.length >= 340) {
+    try {
+      const fixedOffset = 8;
+      const fixedMint = new PublicKey(buffer.slice(fixedOffset, fixedOffset + 32)).toString();
+      const confirmed = await validateMintCandidate(fixedMint);
+      if (confirmed) {
+        return {
+          tag: 'pumpfun_create',
+          mint: fixedMint,
+          confidence: 0.94
+        };
+      }
+    } catch {}
+
+    const offsetTelemetry = [];
+    let failureCount = 0;
+
+    for (let offset = 0; offset <= buffer.length - 32; offset++) {
       try {
-        const mint = new PublicKey(buffer.slice(244, 276)).toString();
-        const confirmed = await isMintOnChain(mint);
+        const candidateMint = new PublicKey(buffer.slice(offset, offset + 32)).toString();
+        const confirmed = await validateMintCandidate(candidateMint);
+        offsetTelemetry.push({ offset, candidateMint, confirmed });
+
         if (confirmed) {
-          console.log(`✅ Confirmed mint at fixed offset: ${mint}`);
           return {
             tag: 'pumpfun_create',
-            mint,
+            mint: candidateMint,
             confidence: 0.94
           };
-        }
-      } catch {}
-    }
-
-    // Fallback scan
-    for (let offset = 0; offset <= buffer.length - 32; offset += 4) {
-      if (offset !== 8 && offset !== 244) continue;
-
-      try {
-        const candidate = new PublicKey(buffer.slice(offset, offset + 32)).toString();
-        const confirmed = await isMintOnChain(candidate);
-        if (confirmed) {
-          console.log(`✅ Confirmed mint at fallback offset ${offset}: ${candidate}`);
-          return candidate;
+        } else {
+          failureCount++;
+          if (failureCount > 20) break;
         }
       } catch (e) {
-        console.warn(`⚠️ Error scanning offset ${offset}: ${e.message}`);
+        offsetTelemetry.push({ offset, error: e.message });
       }
     }
   }
 
-  console.warn('❌ No valid mint found');
   return null;
 }
 
-// 🚨 Direct RPC validation bypassing SDK
-async function isMintOnChain(pubkey) {
-  const payload = {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "getAccountInfo",
-    params: [pubkey, { encoding: "jsonParsed" }]
-  };
+const checkedMints = new Map();
 
-  try {
+export async function validateMintCandidate(pubkeyStr) {
+  if (checkedMints.has(pubkeyStr)) return checkedMints.get(pubkeyStr);
+
+  await new Promise((resolve, reject) => {
+    heliusLimiter.removeTokens(1, err => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+
+  const result = await withBackoff(async () => {
+    const payload = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getAccountInfo",
+      params: [pubkeyStr, { encoding: "jsonParsed" }]
+    };
+
     const res = await fetch("https://api.mainnet-beta.solana.com", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    const result = await res.json();
-    const info = result?.result?.value;
 
-    return (
-      info?.owner === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' &&
-      info?.data?.parsed?.type === 'mint'
-    );
-  } catch (e) {
-    console.warn(`RPC validation failed: ${e.message}`);
-    return false;
-  }
+    const info = await res.json();
+    const data = info?.result?.value?.data;
+
+    const isValid =
+      info?.result?.value?.owner === 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' &&
+      data?.parsed?.type === 'mint';
+
+    checkedMints.set(pubkeyStr, isValid);
+    return isValid;
+  });
+
+  return result;
 }
+
 export function getDexForTag(tag) {
   const map = {
     raydium_initPool: 'raydium',
