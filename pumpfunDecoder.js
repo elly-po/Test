@@ -1,9 +1,11 @@
 import { Connection } from '@solana/web3.js';
 import { logger } from './logger.js';
 
-// RPC connection
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
+/**
+ * Extract mint address from postTokenBalances or log messages.
+ */
 function extractMintAddress({ accounts, meta }, logs) {
   const post = meta?.postTokenBalances || [];
   const pre = meta?.preTokenBalances || [];
@@ -25,6 +27,9 @@ function extractMintAddress({ accounts, meta }, logs) {
   return null;
 }
 
+/**
+ * Extract pool address and liquidity from logs.
+ */
 function extractPoolData(logs) {
   const data = {};
 
@@ -43,6 +48,9 @@ function extractPoolData(logs) {
   return data;
 }
 
+/**
+ * Extract token name and symbol from logs.
+ */
 function extractTokenMetadata(logs) {
   const meta = {};
 
@@ -61,6 +69,9 @@ function extractTokenMetadata(logs) {
   return meta;
 }
 
+/**
+ * Main function to decode a pump.fun transaction.
+ */
 export async function decodePumpfun(signature) {
   try {
     logger.info(`🔍 Fetching transaction for signature: ${signature}`);
@@ -70,12 +81,29 @@ export async function decodePumpfun(signature) {
       maxSupportedTransactionVersion: 0
     });
 
-    if (!txn) throw new Error(`Transaction not found for signature: ${signature}`);
-    if (!txn.transaction || !txn.transaction.message || !txn.transaction.message.accountKeys) {
-      throw new Error(`Malformed transaction data structure.`);
+    // Log structure of fetched txn
+    logger.info('📦 Raw txn keys:', txn && Object.keys(txn));
+    logger.info('📦 txn.transaction keys:', txn?.transaction && Object.keys(txn.transaction));
+    logger.info('📦 txn.message keys:', txn?.transaction?.message && Object.keys(txn.transaction.message));
+
+    if (!txn) {
+      throw new Error(`Transaction not found for signature: ${signature}`);
     }
 
-    logger.info('📦 Raw transaction object:', JSON.stringify(txn, null, 2));
+    if (!txn.transaction) {
+      logger.error('❌ txn.transaction is missing');
+      throw new Error(`Malformed transaction: txn.transaction is missing`);
+    }
+
+    if (!txn.transaction.message) {
+      logger.error('❌ txn.transaction.message is missing');
+      throw new Error(`Malformed transaction: txn.transaction.message is missing`);
+    }
+
+    if (!txn.transaction.message.accountKeys) {
+      logger.error('❌ txn.transaction.message.accountKeys is missing');
+      throw new Error(`Malformed transaction: txn.transaction.message.accountKeys is missing`);
+    }
 
     const { slot, blockTime, meta } = txn;
     const tx = txn.transaction;
