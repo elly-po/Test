@@ -1,6 +1,6 @@
 import { decodePumpfun } from './pumpfunDecoder.js';
 
-const signature = '2rSr9skWgMzXPB1LxuufvM6DakPeSuTobNvUv1eT53rr4up9LhwqBT7EECW4mc8sw7BKyuQ73UMV7aHzqiaRDRG5';
+const signature = '5g6xXeyvBk526k1tvZENcrsJJ6HffgyunfgTcouixmHYQtZzgaSXAGVeoSiENVHMJPUSBxCftruwsZiwozbmsQfd';
 
 decodePumpfun(signature)
   .then(data => {
