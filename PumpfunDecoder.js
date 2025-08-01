@@ -1,11 +1,9 @@
 // pumpfunDecoder.js
 
-import { Connection, PublicKey } from '@solana/web3.js';
-import config from './config/index.js'; // Or hardcode RPC if needed
-import { logger } from './utils/logger.js'; // Optional: replace with console if not available
-
-// Connection to Solana RPC
-const connection = new Connection(config.SOLANA_RPC_URL, 'confirmed');
+import { Connection } from '@solana/web3.js';
+import { logger } from './logger.js'; // No nested utils path
+// You can replace this with your own RPC if needed
+const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
 // 🧠 Extract mint address from transaction
 function extractPumpfunMintAddress(transactionInfo, logs) {
@@ -41,7 +39,7 @@ function extractPoolData(logs) {
 
     const liquidityMatch = log.match(/liquidity:\s*(\d+)/i);
     if (liquidityMatch) {
-      poolData.initialLiquidity = parseInt(liquidityMatch[1]);
+      poolData.initialLiquidity = parseInt(liquidityMatch[1], 10);
     }
   }
 
@@ -70,7 +68,7 @@ function extractTokenMetadata(logs) {
 // 🚀 Main function to call
 export async function decodePumpfun(signature) {
   try {
-    logger?.info?.(`🔍 Fetching transaction for signature: ${signature}`) || console.log(signature);
+    logger.info(`🔍 Fetching transaction for signature: ${signature}`);
 
     const transaction = await connection.getTransaction(signature, {
       commitment: 'confirmed',
@@ -107,11 +105,11 @@ export async function decodePumpfun(signature) {
       createdAt: Date.now()
     };
 
-    logger?.info?.(`✅ Decoded pump.fun transaction:`, result) || console.log(result);
+    logger.info(`✅ Decoded pump.fun transaction:`, result);
     return result;
 
   } catch (error) {
-    logger?.error?.('❌ Error decoding pumpfun transaction:', error) || console.error(error);
+    logger.error('❌ Error decoding pumpfun transaction:', error.message);
     throw error;
   }
 }
