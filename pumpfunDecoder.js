@@ -80,6 +80,7 @@ export async function decodePumpfun(signature) {
     logger.info(`🔍 Fetching transaction for signature: ${signature}`);
 
     const txn = await connection.getTransaction(signature, {
+      logger.info('📦 Raw transaction object:', JSON.stringify(txn, null, 2));
       commitment: 'confirmed',
       maxSupportedTransactionVersion: 0
     });
