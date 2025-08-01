@@ -1,27 +1,24 @@
+// pumpfunDecoder.js
 import { Connection } from '@solana/web3.js';
 import { logger } from './logger.js';
 
+// RPC connection to Solana Mainnet
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
 /**
- * Extract mint address from postTokenBalances or log messages.
+ * Extract the true token mint address from postTokenBalances.
  */
-function extractMintAddress({ accounts, meta }, logs) {
-  const post = meta?.postTokenBalances || [];
-  const pre = meta?.preTokenBalances || [];
+function extractMintAddress(meta) {
+  const postTokenBalances = meta?.postTokenBalances || [];
+  const preTokenBalances = meta?.preTokenBalances || [];
 
-  const newAccounts = post.filter(
-    postBalance => !pre.some(preBalance => preBalance.accountIndex === postBalance.accountIndex)
+  const newTokenAccounts = postTokenBalances.filter(
+    post => !preTokenBalances.some(pre => pre.accountIndex === post.accountIndex)
   );
 
-  if (newAccounts.length > 0) {
-    const mintIndex = newAccounts[0]?.accountIndex;
-    return accounts[mintIndex] || null;
-  }
-
-  for (const log of logs) {
-    const match = log.match(/mint:\s*([A-Za-z0-9]{32,44})/i);
-    if (match) return match[1];
+  // ✅ Extract mint field directly
+  if (newTokenAccounts.length > 0) {
+    return newTokenAccounts[0].mint || null;
   }
 
   return null;
@@ -81,31 +78,26 @@ export async function decodePumpfun(signature) {
       maxSupportedTransactionVersion: 0
     });
 
-    if (!txn) throw new Error(`Transaction not found for signature: ${signature}`);
+    if (!txn) {
+      throw new Error(`Transaction not found for signature: ${signature}`);
+    }
 
-    // Debug logging for structure
     logger.info('📦 Raw txn keys:', Object.keys(txn));
-    logger.info('📦 txn.transaction keys:', txn.transaction && Object.keys(txn.transaction));
-    logger.info('📦 txn.message keys:', txn.transaction?.message && Object.keys(txn.transaction.message));
+    logger.info('📦 txn.transaction keys:', Object.keys(txn.transaction || {}));
+    logger.info('📦 txn.message keys:', Object.keys(txn.transaction?.message || {}));
 
     const { slot, blockTime, meta } = txn;
     const tx = txn.transaction;
-    const msg = tx.message;
+    const logs = meta?.logMessages || [];
 
-    let accounts = [];
+    const accountKeys = tx.message?.accountKeys || tx.message?.staticAccountKeys;
 
-    if (msg.accountKeys) {
-      // Legacy transaction
-      accounts = msg.accountKeys.map(k => k.toString());
-    } else if (msg.staticAccountKeys) {
-      // Versioned transaction
-      accounts = msg.staticAccountKeys.map(k => k.toString());
-    } else {
+    if (!accountKeys) {
       logger.error('❌ txn.transaction.message.accountKeys is missing');
-      throw new Error('Malformed transaction: account keys not found');
+      throw new Error('Malformed transaction: txn.transaction.message.accountKeys is missing');
     }
 
-    const logs = meta?.logMessages || [];
+    const accounts = accountKeys.map(key => key.toString());
 
     const transactionInfo = {
       slot,
@@ -115,7 +107,7 @@ export async function decodePumpfun(signature) {
       signature,
     };
 
-    const mintAddress = extractMintAddress(transactionInfo, logs);
+    const mintAddress = extractMintAddress(meta);
     const poolData = extractPoolData(logs);
     const tokenMetadata = extractTokenMetadata(logs);
 
@@ -125,7 +117,7 @@ export async function decodePumpfun(signature) {
       tokenMetadata,
       transactionInfo,
       platform: 'pump.fun',
-      createdAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
     };
 
     logger.info('✅ Successfully decoded pump.fun transaction:', result);
