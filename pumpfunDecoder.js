@@ -81,34 +81,31 @@ export async function decodePumpfun(signature) {
       maxSupportedTransactionVersion: 0
     });
 
-    // Log structure of fetched txn
-    logger.info('📦 Raw txn keys:', txn && Object.keys(txn));
-    logger.info('📦 txn.transaction keys:', txn?.transaction && Object.keys(txn.transaction));
-    logger.info('📦 txn.message keys:', txn?.transaction?.message && Object.keys(txn.transaction.message));
+    if (!txn) throw new Error(`Transaction not found for signature: ${signature}`);
 
-    if (!txn) {
-      throw new Error(`Transaction not found for signature: ${signature}`);
-    }
-
-    if (!txn.transaction) {
-      logger.error('❌ txn.transaction is missing');
-      throw new Error(`Malformed transaction: txn.transaction is missing`);
-    }
-
-    if (!txn.transaction.message) {
-      logger.error('❌ txn.transaction.message is missing');
-      throw new Error(`Malformed transaction: txn.transaction.message is missing`);
-    }
-
-    if (!txn.transaction.message.accountKeys) {
-      logger.error('❌ txn.transaction.message.accountKeys is missing');
-      throw new Error(`Malformed transaction: txn.transaction.message.accountKeys is missing`);
-    }
+    // Debug logging for structure
+    logger.info('📦 Raw txn keys:', Object.keys(txn));
+    logger.info('📦 txn.transaction keys:', txn.transaction && Object.keys(txn.transaction));
+    logger.info('📦 txn.message keys:', txn.transaction?.message && Object.keys(txn.transaction.message));
 
     const { slot, blockTime, meta } = txn;
     const tx = txn.transaction;
+    const msg = tx.message;
+
+    let accounts = [];
+
+    if (msg.accountKeys) {
+      // Legacy transaction
+      accounts = msg.accountKeys.map(k => k.toString());
+    } else if (msg.staticAccountKeys) {
+      // Versioned transaction
+      accounts = msg.staticAccountKeys.map(k => k.toString());
+    } else {
+      logger.error('❌ txn.transaction.message.accountKeys is missing');
+      throw new Error('Malformed transaction: account keys not found');
+    }
+
     const logs = meta?.logMessages || [];
-    const accounts = tx.message.accountKeys.map(key => key.toString());
 
     const transactionInfo = {
       slot,
@@ -128,7 +125,7 @@ export async function decodePumpfun(signature) {
       tokenMetadata,
       transactionInfo,
       platform: 'pump.fun',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
 
     logger.info('✅ Successfully decoded pump.fun transaction:', result);
