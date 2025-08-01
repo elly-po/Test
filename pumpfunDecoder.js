@@ -1,115 +1,125 @@
 // pumpfunDecoder.js
 
 import { Connection } from '@solana/web3.js';
-import { logger } from './logger.js'; // No nested utils path
-// You can replace this with your own RPC if needed
+import { logger } from './logger.js';
+
+// RPC connection
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
-// 🧠 Extract mint address from transaction
-function extractPumpfunMintAddress(transactionInfo, logs) {
-  const { accounts, meta } = transactionInfo;
+/**
+ * Extract mint address from postTokenBalances or log messages.
+ */
+function extractMintAddress({ accounts, meta }, logs) {
+  const post = meta?.postTokenBalances || [];
+  const pre = meta?.preTokenBalances || [];
 
-  const newAccounts = meta?.postTokenBalances?.filter(balance =>
-    !meta.preTokenBalances?.some(pre => pre.accountIndex === balance.accountIndex)
-  ) || [];
+  const newAccounts = post.filter(
+    postBalance => !pre.some(preBalance => preBalance.accountIndex === postBalance.accountIndex)
+  );
 
-  if (newAccounts.length > 0 && accounts[newAccounts[0].accountIndex]) {
-    return accounts[newAccounts[0].accountIndex];
+  if (newAccounts.length > 0) {
+    const mintIndex = newAccounts[0]?.accountIndex;
+    return accounts[mintIndex] || null;
   }
 
   for (const log of logs) {
-    const mintMatch = log.match(/mint:\s*([A-Za-z0-9]{32,44})/i);
-    if (mintMatch) {
-      return mintMatch[1];
-    }
+    const match = log.match(/mint:\s*([A-Za-z0-9]{32,44})/i);
+    if (match) return match[1];
   }
 
   return null;
 }
 
-// 💧 Extract pool-related data
+/**
+ * Extract pool address and liquidity from logs.
+ */
 function extractPoolData(logs) {
-  const poolData = {};
+  const data = {};
 
   for (const log of logs) {
     const poolMatch = log.match(/pool:\s*([A-Za-z0-9]{32,44})/i);
     if (poolMatch) {
-      poolData.poolAddress = poolMatch[1];
+      data.poolAddress = poolMatch[1];
     }
 
     const liquidityMatch = log.match(/liquidity:\s*(\d+)/i);
     if (liquidityMatch) {
-      poolData.initialLiquidity = parseInt(liquidityMatch[1], 10);
+      data.initialLiquidity = parseInt(liquidityMatch[1], 10);
     }
   }
 
-  return poolData;
+  return data;
 }
 
-// 🏷️ Extract name and symbol
+/**
+ * Extract token name and symbol from logs.
+ */
 function extractTokenMetadata(logs) {
-  const metadata = {};
+  const meta = {};
 
   for (const log of logs) {
     const nameMatch = log.match(/name:\s*"([^"]+)"/i);
     if (nameMatch) {
-      metadata.name = nameMatch[1];
+      meta.name = nameMatch[1];
     }
 
     const symbolMatch = log.match(/symbol:\s*"([^"]+)"/i);
     if (symbolMatch) {
-      metadata.symbol = symbolMatch[1];
+      meta.symbol = symbolMatch[1];
     }
   }
 
-  return metadata;
+  return meta;
 }
 
-// 🚀 Main function to call
+/**
+ * Main function to decode a pump.fun transaction.
+ */
 export async function decodePumpfun(signature) {
   try {
     logger.info(`🔍 Fetching transaction for signature: ${signature}`);
 
-    const transaction = await connection.getTransaction(signature, {
+    const txn = await connection.getTransaction(signature, {
       commitment: 'confirmed',
       maxSupportedTransactionVersion: 0
     });
 
-    if (!transaction) {
-      throw new Error(`Transaction not found for signature: ${signature}`);
+    if (!txn) throw new Error(`Transaction not found for signature: ${signature}`);
+    if (!txn.transaction || !txn.transaction.message || !txn.transaction.message.accountKeys) {
+      throw new Error(`Malformed transaction data structure.`);
     }
 
-    const { slot, blockTime, meta, transaction: tx } = transaction;
-
+    const { slot, blockTime, meta } = txn;
+    const tx = txn.transaction;
     const logs = meta?.logMessages || [];
     const accounts = tx.message.accountKeys.map(key => key.toString());
 
     const transactionInfo = {
-      transaction,
       slot,
       blockTime,
       meta,
-      accounts
+      accounts,
+      signature,
     };
 
-    const mintAddress = extractPumpfunMintAddress(transactionInfo, logs);
+    const mintAddress = extractMintAddress(transactionInfo, logs);
     const poolData = extractPoolData(logs);
     const tokenMetadata = extractTokenMetadata(logs);
 
     const result = {
       mintAddress,
-      transactionInfo,
       poolData,
       tokenMetadata,
+      transactionInfo,
       platform: 'pump.fun',
-      createdAt: Date.now()
+      createdAt: new Date().toISOString()
     };
 
-    logger.info(`✅ Decoded pump.fun transaction:`, result);
+    logger.info('✅ Successfully decoded pump.fun transaction:', result);
     return result;
 
-  } catch (error) {
-    logger.error('❌ Error decoding pumpfun transaction:', error.message);
-    throw error;
+  } catch (err) {
+    logger.error('❌ Failed to decode pump.fun transaction:', err.message);
+    throw err;
   }
 }
