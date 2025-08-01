@@ -17,5 +17,10 @@
   "license": "MIT",
   "dependencies": {
     "@solana/web3.js": "^1.98.0"
+  },
+  "devDependencies": {
+  "typescript": "^5.4.5",
+  "fastestsmallesttextencoderdecoder": "^1.0.22"
   }
+  
 }
