@@ -1,0 +1,21 @@
+{
+  "name": "pumpfun-decoder",
+  "version": "1.0.0",
+  "description": "Decoder module for pump.fun Solana transactions",
+  "main": "pumpfunDecoder.js",
+  "type": "module",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "keywords": [
+    "solana",
+    "pumpfun",
+    "decoder",
+    "blockchain"
+  ],
+  "author": "YourName",
+  "license": "MIT",
+  "dependencies": {
+    "@solana/web3.js": "^1.73.0"
+  }
+}
