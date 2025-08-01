@@ -3,36 +3,40 @@
 import { Connection } from '@solana/web3.js';
 import { logger } from './logger.js';
 
-// RPC connection
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
 /**
- * Extract actual token mint address from instructions.
+ * Extracts the mint address from a transaction using compiled instructions.
  */
 function extractMintAddress({ meta, transaction }) {
-  const knownNonMints = [
+  const knownNonMints = new Set([
     'So11111111111111111111111111111111111111112',
     '11111111111111111111111111111111',
     'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-  ];
+  ]);
 
   const message = transaction.message;
+
+  const allAccountKeys = [
+    ...(message.staticAccountKeys || []),
+    ...(message.loadedAddresses?.writable || []),
+    ...(message.loadedAddresses?.readonly || [])
+  ].map(k => k.toString());
+
   const allInstructions = [
     ...(message.compiledInstructions || []),
     ...(meta?.innerInstructions?.flatMap(i => i.instructions) || [])
   ];
 
   for (const ix of allInstructions) {
-    const programIdIndex = ix.programIdIndex;
-    const programId = message.accountKeys[programIdIndex]?.toString();
-
+    const programId = allAccountKeys[ix.programIdIndex];
     if (programId !== 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA') continue;
 
-    const mintAccountIndex = ix.accounts?.[0];
-    const mintAddress = message.accountKeys[mintAccountIndex]?.toString();
+    const possibleMintIndex = ix.accounts?.[0];
+    const possibleMint = allAccountKeys[possibleMintIndex];
 
-    if (mintAddress && !knownNonMints.includes(mintAddress)) {
-      return mintAddress;
+    if (possibleMint && !knownNonMints.has(possibleMint)) {
+      return possibleMint;
     }
   }
 
@@ -40,7 +44,7 @@ function extractMintAddress({ meta, transaction }) {
 }
 
 /**
- * Extract pool address and liquidity from logs.
+ * Parses logs to find pool address and initial liquidity.
  */
 function extractPoolData(logs) {
   const data = {};
@@ -61,7 +65,7 @@ function extractPoolData(logs) {
 }
 
 /**
- * Extract token name and symbol from logs.
+ * Parses logs to find name and symbol.
  */
 function extractTokenMetadata(logs) {
   const meta = {};
@@ -82,7 +86,7 @@ function extractTokenMetadata(logs) {
 }
 
 /**
- * Main function to decode a pump.fun transaction.
+ * Decodes a pump.fun transaction from its signature.
  */
 export async function decodePumpfun(signature) {
   try {
@@ -95,31 +99,37 @@ export async function decodePumpfun(signature) {
 
     if (!txn) throw new Error(`Transaction not found for signature: ${signature}`);
 
-    const { slot, blockTime, meta, transaction } = txn;
+    const keys = Object.keys(txn);
+    logger.info('📦 Raw txn keys:', keys);
 
-    if (!transaction?.message?.accountKeys && !transaction?.message?.staticAccountKeys) {
-      throw new Error(`Malformed transaction: txn.transaction.message.accountKeys is missing`);
-    }
+    const message = txn.transaction?.message;
+    if (!message) throw new Error(`Missing transaction.message`);
 
-    const message = transaction.message;
-    const accountKeys = message.staticAccountKeys || message.accountKeys || [];
-
-    logger.info('📦 Raw txn keys:', Object.keys(txn));
-    logger.info('📦 txn.transaction keys:', Object.keys(transaction));
+    logger.info('📦 txn.transaction keys:', Object.keys(txn.transaction));
     logger.info('📦 txn.message keys:', Object.keys(message));
 
-    const logs = meta?.logMessages || [];
-    const accounts = accountKeys.map(key => key.toString());
+    const logs = txn.meta?.logMessages || [];
+
+    const allAccountKeys = [
+      ...(message.staticAccountKeys || []),
+      ...(message.loadedAddresses?.writable || []),
+      ...(message.loadedAddresses?.readonly || [])
+    ].map(k => k.toString());
+
+    if (!allAccountKeys || allAccountKeys.length === 0) {
+      logger.error('❌ txn.transaction.message.accountKeys is missing');
+      throw new Error('Malformed transaction: txn.transaction.message.accountKeys is missing');
+    }
 
     const transactionInfo = {
-      slot,
-      blockTime,
-      meta,
-      accounts,
+      slot: txn.slot,
+      blockTime: txn.blockTime,
+      meta: txn.meta,
+      accounts: allAccountKeys,
       signature,
     };
 
-    const mintAddress = extractMintAddress({ meta, transaction });
+    const mintAddress = extractMintAddress(txn);
     const poolData = extractPoolData(logs);
     const tokenMetadata = extractTokenMetadata(logs);
 
