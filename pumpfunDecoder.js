@@ -1,14 +1,9 @@
-// pumpfunDecoder.js
-
 import { Connection } from '@solana/web3.js';
 import { logger } from './logger.js';
 
 // RPC connection
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
-/**
- * Extract mint address from postTokenBalances or log messages.
- */
 function extractMintAddress({ accounts, meta }, logs) {
   const post = meta?.postTokenBalances || [];
   const pre = meta?.preTokenBalances || [];
@@ -30,9 +25,6 @@ function extractMintAddress({ accounts, meta }, logs) {
   return null;
 }
 
-/**
- * Extract pool address and liquidity from logs.
- */
 function extractPoolData(logs) {
   const data = {};
 
@@ -51,9 +43,6 @@ function extractPoolData(logs) {
   return data;
 }
 
-/**
- * Extract token name and symbol from logs.
- */
 function extractTokenMetadata(logs) {
   const meta = {};
 
@@ -72,15 +61,11 @@ function extractTokenMetadata(logs) {
   return meta;
 }
 
-/**
- * Main function to decode a pump.fun transaction.
- */
 export async function decodePumpfun(signature) {
   try {
     logger.info(`🔍 Fetching transaction for signature: ${signature}`);
 
     const txn = await connection.getTransaction(signature, {
-      logger.info('📦 Raw transaction object:', JSON.stringify(txn, null, 2));
       commitment: 'confirmed',
       maxSupportedTransactionVersion: 0
     });
@@ -89,6 +74,8 @@ export async function decodePumpfun(signature) {
     if (!txn.transaction || !txn.transaction.message || !txn.transaction.message.accountKeys) {
       throw new Error(`Malformed transaction data structure.`);
     }
+
+    logger.info('📦 Raw transaction object:', JSON.stringify(txn, null, 2));
 
     const { slot, blockTime, meta } = txn;
     const tx = txn.transaction;
