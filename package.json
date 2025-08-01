@@ -16,6 +16,6 @@
   "author": "YourName",
   "license": "MIT",
   "dependencies": {
-    "@solana/web3.js": "^1.73.0"
+    "@solana/web3.js": "^1.98.0"
   }
 }
