@@ -13,7 +13,13 @@ const raydiumPrograms = new Set([
   'EhhTK3gPZ1NRbVAKf5fRKUYMoLk92boabnZx1RM4y24N', // Raydium AMM V4
 ]);
 
-function extractRaydiumMintAddress({ meta, transaction }) {
+function extractRaydiumMint({ meta, transaction }) {
+  const knownNonMints = new Set([
+    '11111111111111111111111111111111',
+    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+    'SysvarRent111111111111111111111111111111111'
+  ]);
+
   const message = transaction.message;
 
   const allAccountKeys = [
@@ -28,11 +34,11 @@ function extractRaydiumMintAddress({ meta, transaction }) {
   ];
 
   for (const ix of allInstructions) {
-    const programId = allAccountKeys[ix.programIdIndex];
-    if (raydiumPrograms.has(programId)) {
-      for (const acctIdx of ix.accounts || []) {
-        const addr = allAccountKeys[acctIdx];
-        if (addr && addr.endsWith('pump') === false) return addr; // crude filter for mint
+    for (const idx of ix.accounts || []) {
+      const addr = allAccountKeys[idx];
+      if (addr && !knownNonMints.has(addr) && addr.length === 44) {
+        // Heuristic: Possibly a mint
+        return addr;
       }
     }
   }
