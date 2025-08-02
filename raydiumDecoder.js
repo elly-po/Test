@@ -5,17 +5,13 @@ import { logger } from './logger.js';
 
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
-// Known Raydium programs
-const raydiumPrograms = new Set([
-  'RVKd61ztZW9GdKzS1JMeCwFhHcfN1pSgUxi6D9Zz4kQ', // Raydium Swap V2
-  '2s6zNd57wEoHzE3wDCaCG8ct7SbFsU9jTuNFctKUL9du', // Raydium Router
-  '22uTzDuaopAEa2F3FnYr3fCq99r46KYoZZ94uRMP1DgA', // Raydium Pool
-  'EhhTK3gPZ1NRbVAKf5fRKUYMoLk92boabnZx1RM4y24N', // Raydium AMM V4
-]);
-
-function extractRaydiumMint({ meta, transaction }) {
+/**
+ * Extracts a mint address by scanning all instructions for token-related accounts.
+ */
+function extractRaydiumMintAddress({ meta, transaction }) {
   const knownNonMints = new Set([
     '11111111111111111111111111111111',
+    'So11111111111111111111111111111111111111112',
     'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
     'SysvarRent111111111111111111111111111111111'
   ]);
@@ -35,10 +31,9 @@ function extractRaydiumMint({ meta, transaction }) {
 
   for (const ix of allInstructions) {
     for (const idx of ix.accounts || []) {
-      const addr = allAccountKeys[idx];
-      if (addr && !knownNonMints.has(addr) && addr.length === 44) {
-        // Heuristic: Possibly a mint
-        return addr;
+      const account = allAccountKeys[idx];
+      if (account && !knownNonMints.has(account) && account.length === 44) {
+        return account;
       }
     }
   }
@@ -46,6 +41,51 @@ function extractRaydiumMint({ meta, transaction }) {
   return null;
 }
 
+/**
+ * Extracts pool data heuristically from logs.
+ */
+function extractPoolData(logs) {
+  const data = {};
+
+  for (const log of logs) {
+    const poolMatch = log.match(/pool:\s*([A-Za-z0-9]{32,44})/i);
+    if (poolMatch) {
+      data.poolAddress = poolMatch[1];
+    }
+
+    const liquidityMatch = log.match(/liquidity:\s*(\d+)/i);
+    if (liquidityMatch) {
+      data.initialLiquidity = parseInt(liquidityMatch[1], 10);
+    }
+  }
+
+  return data;
+}
+
+/**
+ * Extracts name/symbol if logs contain them (rare for Raydium).
+ */
+function extractTokenMetadata(logs) {
+  const meta = {};
+
+  for (const log of logs) {
+    const nameMatch = log.match(/name:\s*"([^"]+)"/i);
+    if (nameMatch) {
+      meta.name = nameMatch[1];
+    }
+
+    const symbolMatch = log.match(/symbol:\s*"([^"]+)"/i);
+    if (symbolMatch) {
+      meta.symbol = symbolMatch[1];
+    }
+  }
+
+  return meta;
+}
+
+/**
+ * Decodes a Raydium transaction from its signature.
+ */
 export async function decodeRaydium(signature) {
   try {
     logger.info(`🔍 Fetching transaction for signature: ${signature}`);
@@ -71,6 +111,11 @@ export async function decodeRaydium(signature) {
       ...(message.loadedAddresses?.readonly || [])
     ].map(k => k.toString());
 
+    if (!allAccountKeys || allAccountKeys.length === 0) {
+      logger.error('❌ txn.transaction.message.accountKeys is missing');
+      throw new Error('Malformed transaction: txn.transaction.message.accountKeys is missing');
+    }
+
     const transactionInfo = {
       slot: txn.slot,
       blockTime: txn.blockTime,
@@ -80,11 +125,13 @@ export async function decodeRaydium(signature) {
     };
 
     const mintAddress = extractRaydiumMintAddress(txn);
-
-    if (!mintAddress) throw new Error('Not a Raydium transaction');
+    const poolData = extractPoolData(logs);
+    const tokenMetadata = extractTokenMetadata(logs);
 
     const result = {
       mintAddress,
+      poolData,
+      tokenMetadata,
       transactionInfo,
       platform: 'raydium',
       createdAt: new Date().toISOString()
