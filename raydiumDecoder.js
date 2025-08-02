@@ -6,35 +6,18 @@ import { logger } from './logger.js';
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
 /**
- * Extracts a mint address by scanning all instructions for token-related accounts.
+ * Extracts the mint address from postTokenBalances.
+ * Returns the first non-zero token mint.
  */
-function extractRaydiumMintAddress({ meta, transaction }) {
-  const knownNonMints = new Set([
-    '11111111111111111111111111111111',
-    'So11111111111111111111111111111111111111112',
-    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-    'SysvarRent111111111111111111111111111111111'
-  ]);
+function extractRaydiumMintAddress({ meta }) {
+  if (!meta?.postTokenBalances || meta.postTokenBalances.length === 0) {
+    return null;
+  }
 
-  const message = transaction.message;
-
-  const allAccountKeys = [
-    ...(message.staticAccountKeys || []),
-    ...(message.loadedAddresses?.writable || []),
-    ...(message.loadedAddresses?.readonly || [])
-  ].map(k => k.toString());
-
-  const allInstructions = [
-    ...(message.compiledInstructions || []),
-    ...(meta?.innerInstructions?.flatMap(i => i.instructions) || [])
-  ];
-
-  for (const ix of allInstructions) {
-    for (const idx of ix.accounts || []) {
-      const account = allAccountKeys[idx];
-      if (account && !knownNonMints.has(account) && account.length === 44) {
-        return account;
-      }
+  for (const token of meta.postTokenBalances) {
+    const amt = token.uiTokenAmount?.uiAmount;
+    if (amt && amt > 0) {
+      return token.mint;
     }
   }
 
@@ -42,7 +25,7 @@ function extractRaydiumMintAddress({ meta, transaction }) {
 }
 
 /**
- * Extracts pool data heuristically from logs.
+ * Parses logs to find pool address and initial liquidity.
  */
 function extractPoolData(logs) {
   const data = {};
@@ -63,7 +46,7 @@ function extractPoolData(logs) {
 }
 
 /**
- * Extracts name/symbol if logs contain them (rare for Raydium).
+ * Parses logs to find name and symbol.
  */
 function extractTokenMetadata(logs) {
   const meta = {};
