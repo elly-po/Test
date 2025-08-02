@@ -24,7 +24,7 @@ decodeRaydium(signature)
 
 import { decodeMeteora } from './meteoraDecoder.js';
 
-const signature = '3NtHRzJMsbsbVESaZctrGEtkzGaPDQqNhFyLfzBnAvk7Buaw5ZUkDnbAN7cCPBdojw2mYfESWxYwwcw1a9yAyxRD';
+const signature = '53orAryeunDNiqSEjPm6sKHe9UbGbwLs6m8VoQNx4JYtnGYznbNxdtegE82MKax8TAg4q1QtLGnCEZsqPSLMqM6s';
 
 decodeMeteora(signature)
   .then(data => console.log('Decoded Meteora Data:', data))
