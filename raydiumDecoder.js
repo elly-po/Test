@@ -5,24 +5,17 @@ import { logger } from './logger.js';
 
 const connection = new Connection('https://api.mainnet-beta.solana.com', 'confirmed');
 
-// Raydium Program IDs (AMM v4, etc.)
-const RAYDIUM_PROGRAM_IDS = new Set([
-  'RVKd61ztZW9GdKzH9v5zEShkwX4q7yTGceo7nTzjRZV',
-  'EhhTKzYrFaz4XBs1YDe2MFNURnwrjqcmnbnxxLBnH7Lh',
-  'EUqojwWA2rd19FZrzeBncJsm38Jm1hEhE3zsmX3bRc2o',
+// Known Raydium programs
+const raydiumPrograms = new Set([
+  'RVKd61ztZW9GdKzS1JMeCwFhHcfN1pSgUxi6D9Zz4kQ', // Raydium Swap V2
+  '2s6zNd57wEoHzE3wDCaCG8ct7SbFsU9jTuNFctKUL9du', // Raydium Router
+  '22uTzDuaopAEa2F3FnYr3fCq99r46KYoZZ94uRMP1DgA', // Raydium Pool
+  'EhhTK3gPZ1NRbVAKf5fRKUYMoLk92boabnZx1RM4y24N', // Raydium AMM V4
 ]);
 
-/**
- * Extracts mint address heuristically from Raydium transaction.
- */
-function extractMintAddress({ meta, transaction }) {
-  const knownNonMints = new Set([
-    '11111111111111111111111111111111',
-    'So11111111111111111111111111111111111111112',
-    'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
-  ]);
-
+function extractRaydiumMintAddress({ meta, transaction }) {
   const message = transaction.message;
+
   const allAccountKeys = [
     ...(message.staticAccountKeys || []),
     ...(message.loadedAddresses?.writable || []),
@@ -36,12 +29,10 @@ function extractMintAddress({ meta, transaction }) {
 
   for (const ix of allInstructions) {
     const programId = allAccountKeys[ix.programIdIndex];
-    if (!RAYDIUM_PROGRAM_IDS.has(programId)) continue;
-
-    for (const acctIdx of ix.accounts || []) {
-      const addr = allAccountKeys[acctIdx];
-      if (addr && !knownNonMints.has(addr)) {
-        return addr;
+    if (raydiumPrograms.has(programId)) {
+      for (const acctIdx of ix.accounts || []) {
+        const addr = allAccountKeys[acctIdx];
+        if (addr && addr.endsWith('pump') === false) return addr; // crude filter for mint
       }
     }
   }
@@ -49,55 +40,6 @@ function extractMintAddress({ meta, transaction }) {
   return null;
 }
 
-/**
- * Attempts to parse pool address from log messages or known account positions.
- */
-function extractPoolData(logs = []) {
-  const data = {};
-
-  for (const log of logs) {
-    const poolMatch = log.match(/pool:\s*([A-Za-z0-9]{32,44})/i);
-    if (poolMatch) {
-      data.poolAddress = poolMatch[1];
-    }
-  }
-
-  return data;
-}
-
-/**
- * Basic Raydium log inspection for token metadata hints.
- */
-function extractTokenMetadata(logs = []) {
-  const meta = {};
-
-  for (const log of logs) {
-    const nameMatch = log.match(/name:\s*"([^"]+)"/i);
-    if (nameMatch) meta.name = nameMatch[1];
-
-    const symbolMatch = log.match(/symbol:\s*"([^"]+)"/i);
-    if (symbolMatch) meta.symbol = symbolMatch[1];
-  }
-
-  return meta;
-}
-
-/**
- * Checks if any instruction in the tx is a Raydium instruction.
- */
-function isRaydiumTransaction({ transaction }) {
-  const message = transaction.message;
-  const staticKeys = message.staticAccountKeys?.map(k => k.toString()) || [];
-
-  return message.compiledInstructions.some(ix => {
-    const programId = staticKeys[ix.programIdIndex];
-    return RAYDIUM_PROGRAM_IDS.has(programId);
-  });
-}
-
-/**
- * Decodes a Raydium transaction by signature.
- */
 export async function decodeRaydium(signature) {
   try {
     logger.info(`🔍 Fetching transaction for signature: ${signature}`);
@@ -123,11 +65,6 @@ export async function decodeRaydium(signature) {
       ...(message.loadedAddresses?.readonly || [])
     ].map(k => k.toString());
 
-    if (!allAccountKeys || allAccountKeys.length === 0) {
-      logger.error('❌ txn.transaction.message.accountKeys is missing');
-      throw new Error('Malformed transaction: txn.transaction.message.accountKeys is missing');
-    }
-
     const transactionInfo = {
       slot: txn.slot,
       blockTime: txn.blockTime,
@@ -136,18 +73,12 @@ export async function decodeRaydium(signature) {
       signature,
     };
 
-    if (!isRaydiumTransaction(txn)) {
-      throw new Error('Not a Raydium transaction');
-    }
+    const mintAddress = extractRaydiumMintAddress(txn);
 
-    const mintAddress = extractMintAddress(txn);
-    const poolData = extractPoolData(logs);
-    const tokenMetadata = extractTokenMetadata(logs);
+    if (!mintAddress) throw new Error('Not a Raydium transaction');
 
     const result = {
       mintAddress,
-      poolData,
-      tokenMetadata,
       transactionInfo,
       platform: 'raydium',
       createdAt: new Date().toISOString()
@@ -158,6 +89,6 @@ export async function decodeRaydium(signature) {
 
   } catch (err) {
     logger.error('❌ Failed to decode Raydium transaction:', err.message);
-    throw err;
+    throw new Error(`Raydium Decode Error: ${err.message}`);
   }
 }
