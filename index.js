@@ -12,7 +12,7 @@ decodePumpfun(signature)
 
 import { decodeRaydium } from './raydiumDecoder.js';
 
-const signature = '2JYhWPSGgHjhhjMrLFHsVScWGQazpvyQfNj8C1QKNS7VPhTJxVvEoCLu6QjnEXfUPWJA7ZY6dsmAu4GTAnV6KMyg';
+const signature = 'VpeRkyxvCf6bNn4PWBDeiEpsjtXYzC5nJdpen1Etsskwcz1DTwVCyYd1CjEXbYzFZns3pCfK7UAGxHuMVitTKGu';
 
 decodeRaydium(signature)
   .then(data => {
