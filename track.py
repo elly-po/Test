@@ -1,7 +1,7 @@
 import asyncio
 from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
-from solana.publickey import PublicKey  # ✅ Corrected import
+from solders.pubkey import Pubkey as PublicKey  # ✅ Fixed import for solana==0.29.0
 
 # Solana mainnet endpoints
 RPC_HTTP_URL = "https://api.mainnet-beta.solana.com"
@@ -19,7 +19,7 @@ DEX_PROGRAM_IDS = {
 
 def get_recent_transactions():
     solana_client = Client(RPC_HTTP_URL)
-    public_key = PublicKey(WALLET_ADDRESS)
+    public_key = PublicKey.from_string(WALLET_ADDRESS)
 
     try:
         response = solana_client.get_signatures_for_address(public_key, limit=10)
@@ -42,7 +42,7 @@ def get_recent_transactions():
 
 
 async def track_realtime_transactions():
-    public_key = PublicKey(WALLET_ADDRESS)
+    public_key = PublicKey.from_string(WALLET_ADDRESS)
 
     try:
         async with connect(RPC_WS_URL) as websocket:
