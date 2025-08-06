@@ -1,7 +1,8 @@
 import asyncio
 from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
-from solders.pubkey import Pubkey as PublicKey  # ✅ Fixed import for solana==0.29.0
+from solana.rpc.types import TransactionLogsFilterMentions
+from solders.pubkey import Pubkey as PublicKey
 
 # Solana mainnet endpoints
 RPC_HTTP_URL = "https://api.mainnet-beta.solana.com"
@@ -24,19 +25,18 @@ def get_recent_transactions():
     try:
         response = solana_client.get_signatures_for_address(public_key, limit=10)
 
-        if response.get("result"):
+        if response.value:
             print(f"\n📜 Recent Transactions for {WALLET_ADDRESS}:")
-            for tx in response["result"]:
-                signature = tx.get("signature")
-                slot = tx.get("slot")
-                err = tx.get("err")
+            for tx in response.value:
+                signature = tx.signature
+                slot = tx.slot
+                err = tx.err
 
                 print(f"\n🔹 Signature: {signature}")
                 print(f"⏱️ Slot: {slot}")
-                print(f"✅ Status: {'Success' if not err else 'Failed'}")
+                print(f"✅ Status: {'Success' if err is None else 'Failed'}")
         else:
-            print("⚠️ No transactions found or bad response format.")
-
+            print("⚠️ No transactions found.")
     except Exception as e:
         print(f"❌ Error fetching transactions: {e}")
 
@@ -46,7 +46,7 @@ async def track_realtime_transactions():
 
     try:
         async with connect(RPC_WS_URL) as websocket:
-            await websocket.logs_subscribe(public_key)
+            await websocket.logs_subscribe(TransactionLogsFilterMentions([public_key]))
             print("\n👂 Listening for real-time transactions... (Press Ctrl+C to stop)")
 
             async for response in websocket:
