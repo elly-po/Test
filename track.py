@@ -1,7 +1,7 @@
 import asyncio
 from solana.rpc.api import Client
 from solana.rpc.websocket_api import connect
-from solana.rpc.types import TransactionLogsFilterMentions
+from solana.rpc.websocket_types import LogsSubscribeFilterMentions
 from solders.pubkey import Pubkey as PublicKey
 
 # Solana mainnet endpoints
@@ -46,7 +46,7 @@ async def track_realtime_transactions():
 
     try:
         async with connect(RPC_WS_URL) as websocket:
-            await websocket.logs_subscribe(TransactionLogsFilterMentions([public_key]))
+            await websocket.logs_subscribe(LogsSubscribeFilterMentions([public_key]))
             print("\n👂 Listening for real-time transactions... (Press Ctrl+C to stop)")
 
             async for response in websocket:
