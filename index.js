@@ -91,20 +91,24 @@ class SolanaService {
 
       // Validate all addresses
       const addressesToCheck = [
-        this.GLOBAL_FEE_VAULT,
-        SystemProgram.programId,
-        TOKEN_PROGRAM_ID,
-        new PublicKey('SysvarRent11111111111111111111111111111111'),
-        this.CONFIG_AUTHORITY,
-        this.PUMP_PROGRAM_ID,
+        { name: 'GLOBAL_FEE_VAULT', addr: this.GLOBAL_FEE_VAULT },
+        { name: 'SystemProgram.programId', addr: SystemProgram.programId },
+        { name: 'TOKEN_PROGRAM_ID', addr: TOKEN_PROGRAM_ID },
+        { name: 'SysvarRent', addr: new PublicKey('SysvarRent11111111111111111111111111111111') },
+        { name: 'CONFIG_AUTHORITY', addr: this.CONFIG_AUTHORITY },
+        { name: 'PUMP_PROGRAM_ID', addr: this.PUMP_PROGRAM_ID },
+        { name: 'User ATA', addr: userATA },
+        { name: 'BondingCurve ATA', addr: bondingCurveATA },
+        { name: 'Global PDA', addr: globalPda },
+        { name: 'BondingCurve PDA', addr: bondingCurvePda },
       ];
-
-      addressesToCheck.forEach(addr => {
+      
+      addressesToCheck.forEach(({ name, addr }) => {
         try {
-          new PublicKey(addr);
-          this.log('✅ Valid address:', addr.toBase58 ? addr.toBase58() : addr.toString());
+          const pk = new PublicKey(addr); // always construct a new PublicKey to test
+          console.log(`✅ ${name} is valid: ${pk.toBase58()}`);
         } catch (err) {
-          this.log('❌ Invalid address:', addr.toBase58 ? addr.toBase58() : addr.toString(), err.message);
+          console.error(`❌ ${name} is INVALID: ${addr}`, err.message);
         }
       });
 
