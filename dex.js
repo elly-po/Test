@@ -20,7 +20,7 @@ decodeRaydium(signature)
   })
   .catch(err => {
     console.error('Raydium Decode Error:', err.message);
-  });*/
+  });
 
 import { decodeMeteora } from './meteoraDecoder.js';
 
