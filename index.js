@@ -65,6 +65,10 @@ class SolanaService {
       data.writeBigInt64LE(lamportsIn, 8);
       data.writeBigInt64LE(maxSol, 16);
 
+      // Log instruction data
+      console.log("Instruction data length:", data.length);
+      console.log("Instruction data hex:", data.toString("hex"));
+
       // Derive PDAs
       const [globalPda] = await PublicKey.findProgramAddress([Buffer.from('global')], this.PUMP_PROGRAM_ID);
       const [bondingCurvePda] = await PublicKey.findProgramAddress(
@@ -80,18 +84,13 @@ class SolanaService {
         payer.publicKey
       );
 
-      // Validate all public keys (32 bytes)
-      const validatePK = (pk, name) => {
-        if (!pk || pk.toBytes().length !== 32) throw new Error(`Invalid PublicKey: ${name} -> ${pk}`);
-        console.log(`${name}: ${pk.toBase58()}`);
-      };
-
-      validatePK(mintPubkey, 'Mint Pubkey');
-      validatePK(globalPda, 'Global PDA');
-      validatePK(bondingCurvePda, 'BondingCurve PDA');
-      validatePK(bondingCurveATA, 'BondingCurve ATA');
-      validatePK(userATA, 'User ATA');
-      validatePK(payer.publicKey, 'Payer');
+      // Log all public keys
+      console.log("Mint Pubkey:", mintPubkey.toBase58());
+      console.log("Global PDA:", globalPda.toBase58());
+      console.log("BondingCurve PDA:", bondingCurvePda.toBase58());
+      console.log("BondingCurve ATA:", bondingCurveATA.toBase58());
+      console.log("User ATA:", userATA.toBase58());
+      console.log("Payer:", payer.publicKey.toBase58());
 
       // Build TransactionInstruction
       const buyIx = new TransactionInstruction({
@@ -117,13 +116,10 @@ class SolanaService {
       if (createUserAtaIx) tx.add(createUserAtaIx);
       tx.add(buyIx);
 
-      // Optional simulation
-      try {
-        const sim = await this.connection.simulateTransaction(tx);
-        this.log('Simulation result:', sim.value);
-      } catch (simErr) {
-        this.log('Simulation error:', simErr.message);
-      }
+      // Simulate transaction before sending
+      console.log("🔹 Simulating transaction...");
+      const sim = await this.connection.simulateTransaction(tx);
+      console.log("Simulation result:", sim.value);
 
       // Send transaction
       const signature = await sendAndConfirmTransaction(this.connection, tx, [payer], { commitment: 'confirmed' });
@@ -144,13 +140,13 @@ class SolanaService {
   const decryptedKeyBase58 = '4NJA1qCuWLune6U3uyaCPzTdtA1H8cEuUwxinjTcK56ubDPMgzdBqSmJEimwbhnpp69nEsqFgDe4BkprdmJ7vfFk';
 
   // Replace with a valid SPL token mint on mainnet
-  const tokenOut = 'GuvGCUW8ay7Aa1Au8TTR8rZGajZcq8ZE6spdCa3Mmoon'; // wrapped SOL example
+  const tokenOut = 'GuvGCUW8ay7Aa1Au8TTR8rZGajZcq8ZE6spdCa3Mmoon';
   const amountIn = 0.01; // SOL amount to spend
 
   const solService = new SolanaService(RPC_URL);
 
   try {
-    console.log('🔹 Running standalone Pump.fun BUY test...');
+    console.log('🔹 Running fully logged Pump.fun BUY test...');
     const result = await solService.executePumpSwap({ decryptedKeyBase58, tokenOut, amountIn });
     console.log('✅ Transaction signature:', result.signature);
   } catch (err) {
