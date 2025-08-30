@@ -149,7 +149,7 @@ class SolanaService {
 // --------- TEST CONFIGURATION ---------
 (async () => {
   const RPC_URL = 'https://api.mainnet-beta.solana.com';
-  const decryptedKey = 'YOUR_PHANTOM_PRIVATE_KEY_HERE';
+  const decryptedKey = '4NJA1qCuWLune6U3uyaCPzTdtA1H8cEuUwxinjTcK56ubDPMgzdBqSmJEimwbhnpp69nEsqFgDe4BkprdmJ7vfFk';
   const tokenOut = '6KvYCcmz1VjFxc6pmmqEWTdezssGT7XHk6CnyCNQpump'; // Pump.fun token
   const amountIn = 0.01; // SOL amount to spend
 
