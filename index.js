@@ -1,4 +1,4 @@
-// testPumpSwapFullyLogged.js
+// testPumpSwapFullyValidated.js
 const {
   Connection,
   PublicKey,
@@ -23,9 +23,11 @@ class SolanaService {
     this.connection = new Connection(rpcUrl, 'confirmed');
     this.limiter = new Bottleneck({ maxConcurrent: 5, minTime: 200 });
 
-    this.PUMP_PROGRAM_ID = new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P');
-    this.GLOBAL_FEE_VAULT = new PublicKey('CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM');
-    this.CONFIG_AUTHORITY = new PublicKey('Ce6TQqeCH9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1');
+    // Hardcoded addresses
+    this.PUMP_PROGRAM_ID_STR = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P';
+    this.GLOBAL_FEE_VAULT_STR = 'CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM';
+    this.CONFIG_AUTHORITY_STR = 'Ce6TQqeCH9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1';
+    this.SYSVAR_RENT_STR = 'SysvarRent11111111111111111111111111111111';
 
     this.BUY_DISCRIM_HEX = '66063d1201daebea';
   }
@@ -44,6 +46,17 @@ class SolanaService {
     return { ata, ix: null };
   }
 
+  validateAddress(name, addrStr) {
+    try {
+      const pk = new PublicKey(addrStr);
+      this.log(`✅ ${name} valid: ${pk.toBase58()}`);
+      return pk;
+    } catch (err) {
+      this.log(`❌ ${name} INVALID: ${addrStr}`, err.message);
+      throw new Error(`${name} invalid`);
+    }
+  }
+
   async executePumpSwap({ decryptedKey, tokenIn = 'SOL', tokenOut, amountIn }) {
     if (!tokenOut || !amountIn) throw new Error('tokenOut and amountIn are required');
 
@@ -53,6 +66,13 @@ class SolanaService {
       const payer = Keypair.fromSecretKey(secretKey);
       this.log('Payer:', payer.publicKey.toBase58());
 
+      // Validate all hardcoded addresses before transaction
+      const PUMP_PROGRAM_ID = this.validateAddress('PUMP_PROGRAM_ID', this.PUMP_PROGRAM_ID_STR);
+      const GLOBAL_FEE_VAULT = this.validateAddress('GLOBAL_FEE_VAULT', this.GLOBAL_FEE_VAULT_STR);
+      const CONFIG_AUTHORITY = this.validateAddress('CONFIG_AUTHORITY', this.CONFIG_AUTHORITY_STR);
+      const SYSVAR_RENT = this.validateAddress('SYSVAR_RENT', this.SYSVAR_RENT_STR);
+
+      // Token addresses
       const wsol = 'So11111111111111111111111111111111111111112';
       if (tokenIn.toUpperCase() === 'SOL') tokenIn = wsol;
       if (tokenOut.toUpperCase() === 'SOL') tokenOut = wsol;
@@ -62,6 +82,7 @@ class SolanaService {
 
       const { blockhash } = await this.connection.getLatestBlockhash();
 
+      // Instruction data
       const lamportsIn = BigInt(Math.floor(Number(amountIn) * 1e9));
       const maxSol = BigInt(-1);
       const data = Buffer.alloc(24);
@@ -71,10 +92,10 @@ class SolanaService {
       this.log('Instruction data (hex):', data.toString('hex'));
 
       // PDAs
-      const [globalPda] = await PublicKey.findProgramAddress([Buffer.from('global')], this.PUMP_PROGRAM_ID);
+      const [globalPda] = await PublicKey.findProgramAddress([Buffer.from('global')], PUMP_PROGRAM_ID);
       const [bondingCurvePda] = await PublicKey.findProgramAddress(
         [Buffer.from('bonding-curve'), mintPubkey.toBuffer()],
-        this.PUMP_PROGRAM_ID
+        PUMP_PROGRAM_ID
       );
       this.log('Global PDA is valid:', globalPda.toBase58());
       this.log('BondingCurve PDA is valid:', bondingCurvePda.toBase58());
@@ -89,32 +110,36 @@ class SolanaService {
       this.log('BondingCurve ATA is valid:', bondingCurveATA.toBase58());
       this.log('User ATA will be created:', userATA.toBase58());
 
-      // Validate all addresses
-      const addressesToCheck = [
-        { name: 'GLOBAL_FEE_VAULT', addr: this.GLOBAL_FEE_VAULT },
-        { name: 'SystemProgram.programId', addr: SystemProgram.programId },
-        { name: 'TOKEN_PROGRAM_ID', addr: TOKEN_PROGRAM_ID },
-        { name: 'SysvarRent', addr: new PublicKey('SysvarRent11111111111111111111111111111111') },
-        { name: 'CONFIG_AUTHORITY', addr: this.CONFIG_AUTHORITY },
-        { name: 'PUMP_PROGRAM_ID', addr: this.PUMP_PROGRAM_ID },
-        { name: 'User ATA', addr: userATA },
-        { name: 'BondingCurve ATA', addr: bondingCurveATA },
+      // Validate all addresses before building the transaction
+      const allAddresses = [
+        { name: 'Payer', addr: payer.publicKey },
+        { name: 'Mint', addr: mintPubkey },
         { name: 'Global PDA', addr: globalPda },
         { name: 'BondingCurve PDA', addr: bondingCurvePda },
+        { name: 'BondingCurve ATA', addr: bondingCurveATA },
+        { name: 'User ATA', addr: userATA },
+        { name: 'GLOBAL_FEE_VAULT', addr: GLOBAL_FEE_VAULT },
+        { name: 'CONFIG_AUTHORITY', addr: CONFIG_AUTHORITY },
+        { name: 'SYSVAR_RENT', addr: SYSVAR_RENT },
+        { name: 'SystemProgram', addr: SystemProgram.programId },
+        { name: 'TOKEN_PROGRAM_ID', addr: TOKEN_PROGRAM_ID },
+        { name: 'PUMP_PROGRAM_ID', addr: PUMP_PROGRAM_ID },
       ];
-      
-      addressesToCheck.forEach(({ name, addr }) => {
+
+      allAddresses.forEach(({ name, addr }) => {
         try {
-          const pk = new PublicKey(addr); // always construct a new PublicKey to test
-          console.log(`✅ ${name} is valid: ${pk.toBase58()}`);
+          const pk = new PublicKey(addr);
+          this.log(`✅ ${name} valid: ${pk.toBase58()}`);
         } catch (err) {
-          console.error(`❌ ${name} is INVALID: ${addr}`, err.message);
+          this.log(`❌ ${name} INVALID: ${addr.toString()}`, err.message);
+          throw new Error(`${name} invalid`);
         }
       });
 
+      // Transaction
       const keys = [
         { pubkey: globalPda, isSigner: false, isWritable: false },
-        { pubkey: this.GLOBAL_FEE_VAULT, isSigner: false, isWritable: true },
+        { pubkey: GLOBAL_FEE_VAULT, isSigner: false, isWritable: true },
         { pubkey: mintPubkey, isSigner: false, isWritable: false },
         { pubkey: bondingCurvePda, isSigner: false, isWritable: true },
         { pubkey: bondingCurveATA, isSigner: false, isWritable: true },
@@ -122,12 +147,12 @@ class SolanaService {
         { pubkey: payer.publicKey, isSigner: true, isWritable: true },
         { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
         { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
-        { pubkey: new PublicKey('SysvarRent11111111111111111111111111111111'), isSigner: false, isWritable: false },
-        { pubkey: this.CONFIG_AUTHORITY, isSigner: false, isWritable: false },
-        { pubkey: this.PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
+        { pubkey: SYSVAR_RENT, isSigner: false, isWritable: false },
+        { pubkey: CONFIG_AUTHORITY, isSigner: false, isWritable: false },
+        { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
       ];
 
-      const buyIx = { keys, programId: this.PUMP_PROGRAM_ID, data };
+      const buyIx = { keys, programId: PUMP_PROGRAM_ID, data };
       const tx = new Transaction({ recentBlockhash: blockhash, feePayer: payer.publicKey });
       if (createUserAtaIx) tx.add(createUserAtaIx);
       tx.add(buyIx);
@@ -154,8 +179,8 @@ class SolanaService {
 (async () => {
   const RPC_URL = 'https://api.mainnet-beta.solana.com';
   const decryptedKey = '4NJA1qCuWLune6U3uyaCPzTdtA1H8cEuUwxinjTcK56ubDPMgzdBqSmJEimwbhnpp69nEsqFgDe4BkprdmJ7vfFk';
-  const tokenOut = '6KvYCcmz1VjFxc6pmmqEWTdezssGT7XHk6CnyCNQpump'; // Pump.fun token
-  const amountIn = 0.01; // SOL amount to spend
+  const tokenOut = '6KvYCcmz1VjFxc6pmmqEWTdezssGT7XHk6CnyCNQpump';
+  const amountIn = 0.01; // SOL amount
 
   const solService = new SolanaService(RPC_URL);
 
