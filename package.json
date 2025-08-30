@@ -1,0 +1,18 @@
+{
+  "name": "solana-pump-test",
+  "version": "1.0.0",
+  "description": "Standalone Pump.fun BUY test script",
+  "main": "testPumpSwapStandalone.js",
+  "scripts": {
+    "start": "node testPumpSwapStandalone.js"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@solana/spl-token": "^0.4.13",
+    "@solana/web3.js": "^1.98.4",
+    "axios": "^1.11.0",
+    "bottleneck": "^2.19.5",
+    "bs58": "5.0.0"
+  }
+}
