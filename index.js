@@ -1,4 +1,4 @@
-// testPumpSwapFullyValidated.js
+// testPumpSwapFullyValidatedWithChecks.js
 const {
   Connection,
   PublicKey,
@@ -7,6 +7,7 @@ const {
   sendAndConfirmTransaction,
   Keypair,
   SystemProgram,
+  SendTransactionError,
 } = require('@solana/web3.js');
 
 const {
@@ -40,6 +41,7 @@ class SolanaService {
     const ata = await getAssociatedTokenAddress(mintPubkey, ownerPubkey, true);
     const info = await this.connection.getAccountInfo(ata);
     if (!info) {
+      this.log(`🔹 ATA does not exist, will create: ${ata.toBase58()}`);
       const ix = createAssociatedTokenAccountInstruction(payerPubkey, ata, ownerPubkey, mintPubkey);
       return { ata, ix };
     }
@@ -66,7 +68,7 @@ class SolanaService {
       const payer = Keypair.fromSecretKey(secretKey);
       this.log('Payer:', payer.publicKey.toBase58());
 
-      // Validate all hardcoded addresses before transaction
+      // Validate hardcoded addresses
       const PUMP_PROGRAM_ID = this.validateAddress('PUMP_PROGRAM_ID', this.PUMP_PROGRAM_ID_STR);
       const GLOBAL_FEE_VAULT = this.validateAddress('GLOBAL_FEE_VAULT', this.GLOBAL_FEE_VAULT_STR);
       const CONFIG_AUTHORITY = this.validateAddress('CONFIG_AUTHORITY', this.CONFIG_AUTHORITY_STR);
@@ -97,8 +99,8 @@ class SolanaService {
         [Buffer.from('bonding-curve'), mintPubkey.toBuffer()],
         PUMP_PROGRAM_ID
       );
-      this.log('Global PDA is valid:', globalPda.toBase58());
-      this.log('BondingCurve PDA is valid:', bondingCurvePda.toBase58());
+      this.log('Global PDA:', globalPda.toBase58());
+      this.log('BondingCurve PDA:', bondingCurvePda.toBase58());
 
       // ATAs
       const bondingCurveATA = await getAssociatedTokenAddress(mintPubkey, bondingCurvePda, true);
@@ -107,10 +109,10 @@ class SolanaService {
         mintPubkey,
         payer.publicKey
       );
-      this.log('BondingCurve ATA is valid:', bondingCurveATA.toBase58());
-      this.log('User ATA will be created:', userATA.toBase58());
+      this.log('BondingCurve ATA:', bondingCurveATA.toBase58());
+      this.log('User ATA:', userATA.toBase58());
 
-      // Validate all addresses before building the transaction
+      // Validate all addresses
       const allAddresses = [
         { name: 'Payer', addr: payer.publicKey },
         { name: 'Mint', addr: mintPubkey },
@@ -128,8 +130,8 @@ class SolanaService {
 
       allAddresses.forEach(({ name, addr }) => {
         try {
-          const pk = new PublicKey(addr);
-          this.log(`✅ ${name} valid: ${pk.toBase58()}`);
+          new PublicKey(addr);
+          this.log(`✅ ${name} valid: ${addr.toBase58 ? addr.toBase58() : addr.toString()}`);
         } catch (err) {
           this.log(`❌ ${name} INVALID: ${addr.toString()}`, err.message);
           throw new Error(`${name} invalid`);
@@ -157,17 +159,31 @@ class SolanaService {
       if (createUserAtaIx) tx.add(createUserAtaIx);
       tx.add(buyIx);
 
-      // Optional simulation
+      // Pre-simulation balance check
+      const payerBalance = await this.connection.getBalance(payer.publicKey);
+      this.log(`Payer SOL balance: ${payerBalance / LAMPORTS_PER_SOL} SOL`);
+
+      // Simulation with full logging
       try {
         const sim = await this.connection.simulateTransaction(tx);
         this.log('Simulation result:', sim.value);
+        if (sim.value.err) throw new Error(JSON.stringify(sim.value.err));
       } catch (err) {
         this.log('Simulation failed:', err.message);
+        throw new Error(`Simulation failed: ${err.message}`);
       }
 
-      const signature = await sendAndConfirmTransaction(this.connection, tx, [payer], { commitment: 'confirmed' });
-      this.log('✅ PumpFun BUY executed', { signature });
-      return { signature };
+      // Send transaction
+      try {
+        const signature = await sendAndConfirmTransaction(this.connection, tx, [payer], { commitment: 'confirmed' });
+        this.log('✅ PumpFun BUY executed', { signature });
+        return { signature };
+      } catch (err) {
+        if (err instanceof SendTransactionError) {
+          this.log('SendTransactionError logs:', err.logs);
+        }
+        throw err;
+      }
     } catch (err) {
       this.log('❌ PumpFun BUY failed:', err?.message || err);
       throw new Error(`Swap buy failed: ${err?.message || err}`);
@@ -183,12 +199,12 @@ class SolanaService {
   const amountIn = 0.01; // SOL amount
 
   const solService = new SolanaService(RPC_URL);
-
   try {
-    console.log('🔹 Running fully validated Pump.fun BUY test...');
+    console.log('🔹 Running fully validated Pump.fun BUY test with ATA creation...');
     const result = await solService.executePumpSwap({ decryptedKey, tokenOut, amountIn });
     console.log('✅ Transaction signature:', result.signature);
   } catch (err) {
     console.error('❌ Test failed:', err);
   }
 })();
+
