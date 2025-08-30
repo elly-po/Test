@@ -140,7 +140,7 @@ class SolanaService {
   const decryptedKeyBase58 = '4NJA1qCuWLune6U3uyaCPzTdtA1H8cEuUwxinjTcK56ubDPMgzdBqSmJEimwbhnpp69nEsqFgDe4BkprdmJ7vfFk';
 
   // Replace with a valid SPL token mint on mainnet
-  const tokenOut = 'GuvGCUW8ay7Aa1Au8TTR8rZGajZcq8ZE6spdCa3Mmoon';
+  const tokenOut = '6KvYCcmz1VjFxc6pmmqEWTdezssGT7XHk6CnyCNQpump';
   const amountIn = 0.01; // SOL amount to spend
 
   const solService = new SolanaService(RPC_URL);
