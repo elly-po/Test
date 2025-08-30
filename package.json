@@ -14,5 +14,9 @@
     "axios": "^1.11.0",
     "bottleneck": "^2.19.5",
     "bs58": "5.0.0"
+  },
+  "devDependencies": {
+  "typescript": "^5.4.5",
+  "fastestsmallesttextencoderdecoder": "^1.0.22"
   }
 }
